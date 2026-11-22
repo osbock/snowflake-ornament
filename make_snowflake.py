@@ -44,6 +44,12 @@ def point_up(g, extra=0):
     return affinity.rotate(g, -90 + extra, origin=(0, 0))
 
 
+# Alignment hole, cut in the FINAL (already rotated) frame so it is identical on every
+# layer. Lining the holes up then reproduces the stacked preview exactly (a hexagon
+# fixes rotation to within 60 deg, which the 6-fold layers can't tell apart).
+CENTER_HOLE = hexagon(4.5, 0)
+
+
 # ---------------------------------------------------------------- layer 1 (back)
 def layer1():
     w = 4.2
@@ -55,8 +61,7 @@ def layer1():
         Polygon([(38, 0), (42, 3.6), (46, 0), (42, -3.6)]),  # diamond tip
     ])
     g = unary_union([six_fold(arm), hexagon(12, 30)])
-    g = g.difference(hexagon(4.5, 0))  # small center window shows through layer 3's open middle
-    g = point_up(g)
+    g = point_up(g).difference(CENTER_HOLE)  # center window shows through layer 3's open middle
     # hanging loop on the top arm
     loop = Point(0, -50).buffer(5.5).difference(Point(0, -50).buffer(2.5))
     neck = line((0, -44), (0, -46), 4.2)
@@ -75,9 +80,8 @@ def layer2():
         Point(37, 0).buffer(2.4),
     ])
     g = unary_union([six_fold(arm), Point(0, 0).buffer(10.5)])
-    holes = unary_union([six_fold(kite_hole), hexagon(4.5, 0)])
-    g = g.difference(holes)
-    return point_up(g, extra=30)
+    g = g.difference(six_fold(kite_hole))
+    return point_up(g, extra=30).difference(CENTER_HOLE)
 
 
 # ---------------------------------------------------------------- layer 3 (front)
@@ -90,10 +94,9 @@ def layer3():
         Point(24, 0).buffer(3.0),
     ])
     g = unary_union([six_fold(arm), Point(0, 0).buffer(7.5)])
-    g = g.difference(hexagon(4.5, 0))  # open center, lines up with layers 1+2
     # small dots punched in the arm tips
     g = g.difference(six_fold(Point(24, 0).buffer(1.0)))
-    return point_up(g)
+    return point_up(g).difference(CENTER_HOLE)  # open center, lines up with layers 1+2
 
 
 # ---------------------------------------------------------------- SVG output
@@ -157,5 +160,11 @@ if __name__ == "__main__":
 
     # stacked colour preview (not for cutting)
     c = (60, 62)
-    (OUT / "preview_stacked.svg").write_text(svg(
-        [(l1, *c, "#e8eef5"), (l2, *c, "#8fb8de"), (l3, *c, "#ffffff")], 120, 120, preview=True))
+    preview = svg([(l1, *c, "#e8eef5"), (l2, *c, "#8fb8de"), (l3, *c, "#ffffff")], 120, 120, preview=True)
+    (OUT / "preview_stacked.svg").write_text(preview)
+    try:
+        import resvg_py  # optional: pip install resvg-py
+        px = preview.replace('width="120mm" height="120mm"', 'width="900" height="900"', 1)  # resvg-py rejects mm sizes
+        (OUT / "preview_stacked.png").write_bytes(bytes(resvg_py.svg_to_bytes(svg_string=px)))
+    except ImportError:
+        print("resvg-py not installed; skipped preview_stacked.png")

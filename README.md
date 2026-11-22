@@ -24,6 +24,6 @@ Cut lines are red, 0.1 mm wide, in millimetres. Import at 1:1.
 Edit `make_snowflake.py` and run it to regenerate the SVGs and preview:
 
 ```bash
-pip install shapely
+pip install shapely resvg-py   # resvg-py is optional, renders the PNG preview
 python make_snowflake.py
 ```
