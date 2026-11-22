@@ -105,23 +105,26 @@ def ring_d(coords):
     return "M" + " L".join(f"{x:.3f},{y:.3f}" for x, y in pts[:-1]) + " Z"
 
 
-def geom_d(g):
+def rings(g):
     polys = [g] if g.geom_type == "Polygon" else list(g.geoms)
-    parts = []
     for p in polys:
-        parts.append(ring_d(p.exterior.coords))
-        parts.extend(ring_d(i.coords) for i in p.interiors)
-    return " ".join(parts)
+        yield p.exterior.coords
+        yield from (i.coords for i in p.interiors)
 
 
 def svg(items, w, h, preview=False):
+    # each layer is one <g id=name>: in cut files the outline and every hole are separate
+    # paths inside it; the preview keeps one compound path so even-odd fill shows the holes
     body = []
-    for g, dx, dy, fill in items:
+    for name, g, dx, dy, fill in items:
         g = affinity.translate(g, dx, dy)
         if preview:
-            body.append(f'<path d="{geom_d(g)}" fill="{fill}" fill-rule="evenodd" stroke="#555" stroke-width="0.2"/>')
+            d = " ".join(ring_d(r) for r in rings(g))
+            paths = f'<path d="{d}" fill="{fill}" fill-rule="evenodd" stroke="#555" stroke-width="0.2"/>'
         else:
-            body.append(f'<path d="{geom_d(g)}" fill="none" stroke="#ff0000" stroke-width="0.1"/>')
+            paths = "".join(f'<path d="{ring_d(r)}"/>' for r in rings(g))
+        style = "" if preview else ' fill="none" stroke="#ff0000" stroke-width="0.1"'
+        body.append(f'<g id="{name}"{style}>{paths}</g>')
     bg = '<rect width="100%" height="100%" fill="#1d2b3a"/>' if preview else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}">'
@@ -146,21 +149,22 @@ if __name__ == "__main__":
         minx, miny, maxx, maxy = g.bounds
         m = 3
         W, H = maxx - minx + 2 * m, maxy - miny + 2 * m
-        (OUT / f"{name}.svg").write_text(svg([(g, -minx + m, -miny + m, None)], round(W, 2), round(H, 2)))
+        (OUT / f"{name}.svg").write_text(svg([(name, g, -minx + m, -miny + m, None)], round(W, 2), round(H, 2)))
 
     # all three nested on one sheet
     l1, l2, l3 = layers.values()
     sheet = []
     x = 5
-    for g in (l1, l2, l3):
+    for name, g in layers.items():
         minx, miny, maxx, maxy = g.bounds
-        sheet.append((g, x - minx, 5 - miny, None))
+        sheet.append((name, g, x - minx, 5 - miny, None))
         x += maxx - minx + 5
     (OUT / "all_layers_sheet.svg").write_text(svg(sheet, round(x, 1), 115))
 
     # stacked colour preview (not for cutting)
     c = (60, 62)
-    preview = svg([(l1, *c, "#e8eef5"), (l2, *c, "#8fb8de"), (l3, *c, "#ffffff")], 120, 120, preview=True)
+    preview = svg([("layer1_back", l1, *c, "#e8eef5"), ("layer2_middle", l2, *c, "#8fb8de"),
+                   ("layer3_front", l3, *c, "#ffffff")], 120, 120, preview=True)
     (OUT / "preview_stacked.svg").write_text(preview)
     try:
         import resvg_py  # optional: pip install resvg-py
