@@ -6,13 +6,20 @@ Layers (glue back -> front, centers aligned):
   layer3_front.svg   ~54 mm, delicate star with open center
 
 Run with:  python make_snowflake.py      (needs: pip install shapely)
+
+Holding tabs (optional):
+  python make_snowflake.py --tabs                 # 0.5 mm tabs
+  python make_snowflake.py --tabs --tab-width 0.8
+Each piece gets 2 tabs on its outer outline, between two arms and opposite each
+other. Tabbed files are written alongside the plain ones as *_tabs.svg.
 """
+import argparse
 import math
 from pathlib import Path
 
 from shapely import affinity
 from shapely.geometry import LineString, Point, Polygon
-from shapely.ops import unary_union
+from shapely.ops import substring, unary_union
 
 OUT = Path(__file__).parent
 MIN_WEB = 2.0  # mm; thinnest material bridge the design aims for (3 mm ply / acrylic)
@@ -105,6 +112,11 @@ def ring_d(coords):
     return "M" + " L".join(f"{x:.3f},{y:.3f}" for x, y in pts[:-1]) + " Z"
 
 
+def open_d(line):
+    pts = list(line.coords)
+    return "M" + " L".join(f"{x:.3f},{y:.3f}" for x, y in pts)
+
+
 def rings(g):
     polys = [g] if g.geom_type == "Polygon" else list(g.geoms)
     for p in polys:
@@ -112,15 +124,68 @@ def rings(g):
         yield from (i.coords for i in p.interiors)
 
 
-def svg(items, w, h, preview=False):
+# ---------------------------------------------------------------- holding tabs
+# Arm rotation of each layer relative to "one arm straight up" (layer 2 is turned 30 deg).
+LAYER_ROT = {"layer1_back": 0, "layer2_middle": 30, "layer3_front": 0}
+
+
+def tab_points(g, rot, centre):
+    """Two points on the outer outline: between arms, opposite each other."""
+    cx, cy = centre
+    pts = []
+    for base in (30, 210):  # bisector between two arms, and its opposite
+        a = math.radians(-90 + rot + base)
+        ray = LineString([(cx, cy), (cx + 500 * math.cos(a), cy + 500 * math.sin(a))])
+        hit = ray.intersection(g.exterior)
+        cands = [hit] if hit.geom_type == "Point" else [p for p in getattr(hit, "geoms", []) if p.geom_type == "Point"]
+        pts.append(max(cands, key=lambda p: p.distance(Point(cx, cy))))  # outermost crossing
+    return pts
+
+
+def tabbed_outline(g, rot, centre, width):
+    """Outer outline split into open paths, leaving `width`-mm gaps as holding tabs."""
+    ring = LineString(g.exterior.coords)
+    L = ring.length
+
+    def flat(c, span):  # outline is ~straight over `span` mm centred on c
+        a = ring.interpolate((c - span / 2) % L)
+        b = ring.interpolate((c + span / 2) % L)
+        return a.distance(b) >= 0.99 * span
+
+    raw = [ring.project(p) for p in tab_points(g, rot, centre)]
+    # The bisector often lands in a V-notch; slide along the outline to the nearest
+    # straight stretch. The design has 180-deg symmetry, so the same shift keeps the
+    # second tab exactly opposite the first.
+    shift = next(s for k in range(0, 400) for s in (k * 0.05, -k * 0.05)
+                 if all(flat(c + s, width + 1.5) for c in raw))
+    centres = sorted((c + shift) % L for c in raw)
+    gaps = [((c - width / 2) % L, (c + width / 2) % L) for c in centres]
+    parts = []
+    for i, (_, gap_end) in enumerate(gaps):
+        nxt_start = gaps[(i + 1) % len(gaps)][0]
+        if nxt_start > gap_end:
+            parts.append(open_d(substring(ring, gap_end, nxt_start)))
+        else:  # runs past the ring's start point
+            a, b = substring(ring, gap_end, L), substring(ring, 0, nxt_start)
+            parts.append(open_d(LineString(list(a.coords) + list(b.coords)[1:])))
+    return parts
+
+
+def svg(items, w, h, preview=False, tabs=None):
     # each layer is one <g id=name>: in cut files the outline and every hole are separate
-    # paths inside it; the preview keeps one compound path so even-odd fill shows the holes
+    # paths inside it; the preview keeps one compound path so even-odd fill shows the holes.
+    # With `tabs` (mm), the outline is broken into open paths around the holding tabs.
     body = []
     for name, g, dx, dy, fill in items:
         g = affinity.translate(g, dx, dy)
         if preview:
             d = " ".join(ring_d(r) for r in rings(g))
             paths = f'<path d="{d}" fill="{fill}" fill-rule="evenodd" stroke="#555" stroke-width="0.2"/>'
+        elif tabs:
+            # every layer is built around (0, 0), so its centre is now at (dx, dy)
+            outline = tabbed_outline(g, LAYER_ROT[name], (dx, dy), tabs)
+            paths = "".join(f'<path d="{d}"/>' for d in outline)
+            paths += "".join(f'<path d="{ring_d(i.coords)}"/>' for i in g.interiors)
         else:
             paths = "".join(f'<path d="{ring_d(r)}"/>' for r in rings(g))
         style = "" if preview else ' fill="none" stroke="#ff0000" stroke-width="0.1"'
@@ -143,23 +208,32 @@ def check(name, g):
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--tabs", action="store_true", help="also write *_tabs.svg files with holding tabs")
+    ap.add_argument("--tab-width", type=float, default=0.5, metavar="MM", help="tab width in mm (default 0.5)")
+    args = ap.parse_args()
+
     layers = {"layer1_back": layer1(), "layer2_middle": layer2(), "layer3_front": layer3()}
+    variants = [("", None)] + ([("_tabs", args.tab_width)] if args.tabs else [])
     for name, g in layers.items():
         check(name, g)
         minx, miny, maxx, maxy = g.bounds
         m = 3
         W, H = maxx - minx + 2 * m, maxy - miny + 2 * m
-        (OUT / f"{name}.svg").write_text(svg([(name, g, -minx + m, -miny + m, None)], round(W, 2), round(H, 2)))
+        for suffix, tabs in variants:
+            (OUT / f"{name}{suffix}.svg").write_text(
+                svg([(name, g, -minx + m, -miny + m, None)], round(W, 2), round(H, 2), tabs=tabs))
 
     # all three nested on one sheet
-    l1, l2, l3 = layers.values()
     sheet = []
     x = 5
     for name, g in layers.items():
         minx, miny, maxx, maxy = g.bounds
         sheet.append((name, g, x - minx, 5 - miny, None))
         x += maxx - minx + 5
-    (OUT / "all_layers_sheet.svg").write_text(svg(sheet, round(x, 1), 115))
+    for suffix, tabs in variants:
+        (OUT / f"all_layers_sheet{suffix}.svg").write_text(svg(sheet, round(x, 1), 115, tabs=tabs))
+    l1, l2, l3 = layers.values()
 
     # stacked colour preview (not for cutting)
     c = (60, 62)
