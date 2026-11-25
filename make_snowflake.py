@@ -1,9 +1,12 @@
-"""Generate a 3-layer laser-cut snowflake ornament as SVG files (units: mm).
+"""Generate a laser-cut snowflake ornament as SVG files (units: mm).
 
-Layers (glue back -> front, centers aligned):
-  layer1_back.svg    ~100 mm tall, bold arms + hanging loop
-  layer2_middle.svg  ~76 mm, rotated 30 deg so its arms sit between the back arms
-  layer3_front.svg   ~54 mm, delicate star with open center
+The ornament is 5 layers, built symmetrically about the centre piece, so it looks
+the same from both sides. Only 3 distinct pieces are generated; cut layers 2 and 3 twice:
+  layer3_front.svg   ~54 mm, delicate star with open center       (x2)
+  layer2_middle.svg  ~76 mm, rotated 30 deg so its arms sit between the centre arms  (x2)
+  layer1_back.svg    ~100 mm tall, bold arms + hanging loop; the centre piece  (x1)
+Stack order: 3, 2, 1, 2, 3. exploded_view.svg/.png shows it. Every piece is
+mirror-symmetric, so the flipped copies are identical.
 
 Run with:  python make_snowflake.py      (needs: pip install shapely)
 
@@ -15,6 +18,7 @@ other. Tabbed files are written alongside the plain ones as *_tabs.svg.
 """
 import argparse
 import math
+import re
 from pathlib import Path
 
 from shapely import affinity
@@ -197,6 +201,61 @@ def svg(items, w, h, preview=False, tabs=None):
     )
 
 
+LAYER_FILL = {"layer1_back": "#e8eef5", "layer2_middle": "#8fb8de", "layer3_front": "#ffffff"}
+LAYER_EDGE = {"layer1_back": "#9aa9b9", "layer2_middle": "#4f7ea8", "layer3_front": "#b4c0cc"}
+
+
+def exploded_svg(layers, spacing=13, squash=0.3, turn=-18, thickness=3.0):
+    """Oblique exploded view of the symmetric 5-layer stack (not for cutting)."""
+    stack = [  # top of the picture = the side facing the viewer
+        ("layer3_front", "Layer 3 — layer3_front.svg"),
+        ("layer2_middle", "Layer 2 — layer2_middle.svg"),
+        ("layer1_back", "Centre — layer1_back.svg"),
+        ("layer2_middle", "Layer 2 (2nd copy, flipped)"),
+        ("layer3_front", "Layer 3 (2nd copy, flipped)"),
+    ]
+    cx, y0 = 62, 24
+    W, H = 205, y0 + spacing * (len(stack) - 1) + 34
+    centres = [y0 + i * spacing for i in range(len(stack))]
+    edge_px = thickness * math.sqrt(1 - squash ** 2)  # visible side of a tilted sheet
+    out = [f'<rect width="100%" height="100%" fill="#1d2b3a"/>',
+           f'<line x1="{cx}" y1="{centres[0] - 20}" x2="{cx}" y2="{centres[-1] + 20}" '
+           f'stroke="#c9d6e3" stroke-width="0.35" stroke-dasharray="2 1.5"/>']
+    # draw from the bottom of the stack up so nearer layers cover farther ones
+    for (name, label), cy in reversed(list(zip(stack, centres))):
+        g = layers[name]
+        d = " ".join(ring_d(r) for r in rings(g))
+        tf = f"translate({cx} {cy}) scale(1 {squash}) rotate({turn})"
+        side = "".join(
+            f'<path transform="translate(0 {t:.2f}) {tf}" d="{d}" fill="{LAYER_EDGE[name]}" fill-rule="evenodd"/>'
+            for t in [edge_px * k / 6 for k in range(6, 0, -1)])
+        top = (f'<path transform="{tf}" d="{d}" fill="{LAYER_FILL[name]}" fill-rule="evenodd" '
+               f'stroke="{LAYER_EDGE[name]}" stroke-width="0.25" vector-effect="non-scaling-stroke"/>')
+        tx = cx + 64
+        lead = (f'<line x1="{cx + 56}" y1="{cy}" x2="{tx - 2}" y2="{cy}" stroke="#7d93a8" stroke-width="0.25"/>'
+                f'<text x="{tx}" y="{cy + 1.4}" font-family="Helvetica, Arial, sans-serif" font-size="4.2" '
+                f'fill="#e8eef5">{label}</text>')
+        out.append(f'<g id="exploded_{len(out)}">{side}{top}{lead}</g>')
+    out.append(f'<text x="{W / 2}" y="{H - 7}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" '
+               f'font-size="3.6" fill="#9fb3c6">Glue in this order, lining up the centre hex holes. '
+               f'Cut layers 2 and 3 twice.</text>')
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}mm" height="{H}mm" viewBox="0 0 {W} {H}">'
+            f"{''.join(out)}</svg>\n")
+
+
+def write_png(svg_text, path, px_width):
+    """Render an SVG string to PNG with resvg-py if it is installed (optional)."""
+    try:
+        import resvg_py  # optional: pip install resvg-py
+    except ImportError:
+        print(f"resvg-py not installed; skipped {path.name}")
+        return
+    w, h = (float(v) for v in re.search(r'width="([\d.]+)mm" height="([\d.]+)mm"', svg_text).groups())
+    px = re.sub(r'width="[\d.]+mm" height="[\d.]+mm"',
+                f'width="{px_width}" height="{round(px_width * h / w)}"', svg_text, count=1)  # resvg-py rejects mm
+    path.write_bytes(bytes(resvg_py.svg_to_bytes(svg_string=px)))
+
+
 def check(name, g):
     # rough min-feature check: eroding by MIN_WEB/2 shouldn't split the part into pieces
     eroded = g.buffer(-MIN_WEB / 2 + 0.05)
@@ -240,9 +299,9 @@ if __name__ == "__main__":
     preview = svg([("layer1_back", l1, *c, "#e8eef5"), ("layer2_middle", l2, *c, "#8fb8de"),
                    ("layer3_front", l3, *c, "#ffffff")], 120, 120, preview=True)
     (OUT / "preview_stacked.svg").write_text(preview)
-    try:
-        import resvg_py  # optional: pip install resvg-py
-        px = preview.replace('width="120mm" height="120mm"', 'width="900" height="900"', 1)  # resvg-py rejects mm sizes
-        (OUT / "preview_stacked.png").write_bytes(bytes(resvg_py.svg_to_bytes(svg_string=px)))
-    except ImportError:
-        print("resvg-py not installed; skipped preview_stacked.png")
+    write_png(preview, OUT / "preview_stacked.png", 900)
+
+    # exploded view of the symmetric 5-layer assembly (not for cutting)
+    exploded = exploded_svg(layers)
+    (OUT / "exploded_view.svg").write_text(exploded)
+    write_png(exploded, OUT / "exploded_view.png", 1400)
